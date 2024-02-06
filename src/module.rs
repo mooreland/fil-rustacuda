@@ -8,6 +8,7 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::mem;
 use std::ptr;
+use ark_std::{end_timer, start_timer};
 
 /// A compiled CUDA module, loaded into a context.
 #[derive(Debug)]

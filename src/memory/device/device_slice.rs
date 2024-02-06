@@ -12,6 +12,7 @@ use std::ops::{
 
 use std::os::raw::c_void;
 use std::slice::{self, Chunks, ChunksMut};
+use ark_std::{end_timer, start_timer};
 
 /// Fixed-size device-side slice.
 #[derive(Debug)]
@@ -528,6 +529,26 @@ impl<T: DeviceCopy> CopyDestination<DeviceBuffer<T>> for DeviceSlice<T> {
 impl<T: DeviceCopy, I: AsRef<[T]> + AsMut<[T]> + ?Sized> AsyncCopyDestination<I>
     for DeviceSlice<T>
 {
+    // unsafe fn async_copy_from(&mut self, val: &I, stream: &Stream) -> CudaResult<()> {
+    //     let val = val.as_ref();
+    //     assert!(
+    //         self.len() == val.len(),
+    //         "destination and source slices have different lengths"
+    //     );
+    //     let size = mem::size_of::<T>() * self.len();
+    //     if size != 0 {
+    //         cuda_driver_sys::cuMemcpyHtoDAsync_v2(
+    //             self.0.as_mut_ptr() as u64,
+    //             val.as_ptr() as *const c_void,
+    //             size,
+    //             stream.as_inner(),
+    //         )
+    //             .to_result()?
+    //     }
+    //     Ok(())
+    // }
+
+
     unsafe fn async_copy_from(&mut self, val: &I, stream: &Stream) -> CudaResult<()> {
         let val = val.as_ref();
         assert!(
@@ -535,6 +556,7 @@ impl<T: DeviceCopy, I: AsRef<[T]> + AsMut<[T]> + ?Sized> AsyncCopyDestination<I>
             "destination and source slices have different lengths"
         );
         let size = mem::size_of::<T>() * self.len();
+        let timer =start_timer!(||"cuMemcpyHtoDAsync_v2");
         if size != 0 {
             cuda_driver_sys::cuMemcpyHtoDAsync_v2(
                 self.0.as_mut_ptr() as u64,
@@ -544,8 +566,48 @@ impl<T: DeviceCopy, I: AsRef<[T]> + AsMut<[T]> + ?Sized> AsyncCopyDestination<I>
             )
             .to_result()?
         }
+        end_timer!(timer);
+        // let timer =start_timer!(||"synchronize");
+        // stream.synchronize().unwrap();
+        // end_timer!(timer);
         Ok(())
     }
+
+    // unsafe fn async_copy_from(&mut self, val: &I, stream: &Stream) -> CudaResult<()> {
+    //     let val = val.as_ref();
+    //     assert!(
+    //         self.len() == val.len(),
+    //         "destination and source slices have different lengths"
+    //     );
+    //     let size = mem::size_of::<T>() * self.len();
+    //     let timer =start_timer!(||"register memory pin");
+    //     cuda_driver_sys::cuMemHostRegister_v2(val.as_ptr() as *mut c_void,size/2,
+    //                                           cuda_driver_sys::CUmemAllocationType_enum::CU_MEM_ALLOCATION_TYPE_PINNED as u32).to_result()?;
+    //     cuda_driver_sys::cuMemHostRegister_v2(val.as_ptr() as *mut c_void,size/2,
+    //                                           cuda_driver_sys::CUmemAllocationType_enum::CU_MEM_ALLOCATION_TYPE_PINNED as u32).to_result()?;
+    //     end_timer!(timer);
+    //     let timer =start_timer!(||"cuMemcpyHtoDAsync_v2");
+    //     // cuda_driver_sys::cuMemHostRegister_v2(val.as_ptr() as *mut c_void,size,
+    //     //                                       cuda_driver_sys::CUmemAllocationType_enum::CU_MEM_ALLOCATION_TYPE_PINNED as u32).to_result()?;
+    //
+    //     if size != 0 {
+    //         cuda_driver_sys::cuMemcpyHtoDAsync_v2(
+    //             self.0.as_mut_ptr() as u64,
+    //             val.as_ptr() as *const c_void,
+    //             size,
+    //             stream.as_inner(),
+    //         )
+    //             .to_result()?
+    //     }
+    //     end_timer!(timer);
+    //     let timer =start_timer!(||"synchronize");
+    //     stream.synchronize().unwrap();
+    //     end_timer!(timer);
+    //     let timer =start_timer!(||"un-register memory pin");
+    //     cuda_driver_sys::cuMemHostUnregister(val.as_ptr() as *mut c_void).to_result()?;
+    //     end_timer!(timer);
+    //     Ok(())
+    // }
 
     unsafe fn async_copy_to(&self, val: &mut I, stream: &Stream) -> CudaResult<()> {
         let val = val.as_mut();

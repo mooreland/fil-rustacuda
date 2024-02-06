@@ -5,7 +5,9 @@ use std::mem;
 use std::ops;
 use std::ptr;
 use std::slice;
-
+use ark_std::{end_timer, start_timer};
+// use rayon::iter::ParallelIterator;
+// use rayon::iter::IntoParallelRefMutIterator;
 /// Fixed-size host-side buffer in page-locked memory.
 ///
 /// See the [`module-level documentation`](../memory/index.html) for more details on page-locked
@@ -34,10 +36,16 @@ impl<T: DeviceCopy + Clone> LockedBuffer<T> {
     /// ```
     pub fn new(value: &T, size: usize) -> CudaResult<Self> {
         unsafe {
+            let timer = start_timer!(||"lock new");
             let mut uninit = LockedBuffer::uninitialized(size)?;
+            end_timer!(timer);
+            let timer = start_timer!(||"init value");
             for x in 0..size {
                 *uninit.get_unchecked_mut(x) = value.clone();
             }
+            // *uninit.par_iter_mut().for_each(|x: &mut T| *x= value.clone());
+            // input_poly.values.par_iter_mut().for_each(|lhs| *lhs = F::random(rng));
+            end_timer!(timer);
             Ok(uninit)
         }
     }

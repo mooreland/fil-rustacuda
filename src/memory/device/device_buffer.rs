@@ -1,13 +1,16 @@
 use crate::error::{CudaResult, DropResult, ToResult};
 use crate::memory::device::{AsyncCopyDestination, CopyDestination, DeviceSlice};
-use crate::memory::malloc::{cuda_free, cuda_malloc};
+use crate::memory::malloc::{cuda_free, cuda_malloc,cuda_malloc_locked,cuda_free_locked};
 use crate::memory::DeviceCopy;
 use crate::memory::DevicePointer;
 use crate::stream::Stream;
 use std::mem;
 use std::ops::{Deref, DerefMut};
+use std::os::raw::c_void;
 
 use std::ptr;
+use ark_std::{end_timer, start_timer};
+
 
 /// Fixed-size device-side buffer. Provides basic access to device memory.
 #[derive(Debug)]
@@ -127,6 +130,56 @@ impl<T> DeviceBuffer<T> {
     pub unsafe fn from_raw_parts(ptr: DevicePointer<T>, capacity: usize) -> DeviceBuffer<T> {
         DeviceBuffer { buf: ptr, capacity }
     }
+
+    pub unsafe fn register_slice(slice: &[T]) -> CudaResult<()> {
+        let size = mem::size_of::<T>() * slice.len();
+
+        let timer =start_timer!(||"register memory pin");
+        cuda_driver_sys::cuMemHostRegister_v2(slice.as_ptr() as *mut c_void,size,
+                                              cuda_driver_sys::CUmemAllocationType_enum::CU_MEM_ALLOCATION_TYPE_PINNED as u32).to_result()?;
+        end_timer!(timer);
+        Ok(())
+    }
+
+    pub unsafe fn register_slice_chunk(val: &[T]) -> CudaResult<()> {
+        let size = mem::size_of::<T>() * val.len();
+
+        // slice.chunks()
+        let mid = val.len()/2;
+        println!("len={},mid={}",val.len(),mid);
+        let slice2 = &val[mid..];
+        let slice1 = &val[..mid];
+
+        let timer =start_timer!(||"register memory pin");
+        cuda_driver_sys::cuMemHostRegister_v2(slice1.as_ptr() as *mut c_void,size/2,
+                                              cuda_driver_sys::CUmemAllocationType_enum::CU_MEM_ALLOCATION_TYPE_PINNED as u32).to_result()?;
+
+        end_timer!(timer);
+        let timer =start_timer!(||"register memory pin2");
+        cuda_driver_sys::cuMemHostRegister_v2(slice2.as_ptr() as *mut c_void,size/2,
+                                              cuda_driver_sys::CUmemAllocationType_enum::CU_MEM_ALLOCATION_TYPE_PINNED as u32).to_result().unwrap();
+
+        end_timer!(timer);
+        Ok(())
+    }
+
+
+    pub unsafe fn unregister_slice(slice: &[T]) -> CudaResult<()> {
+        // let val = val.as_ref();
+        // assert!(
+        //     self.len() == val.len(),
+        //     "destination and source slices have different lengths"
+        // );
+        // let size = mem::size_of::<T>() * slice.len();
+        // let slice = &slice[slice.len()/2..];
+        let timer =start_timer!(||"UN-register memory pin");
+        cuda_driver_sys::cuMemHostUnregister(slice.as_ptr() as *mut c_void).to_result()?;
+        end_timer!(timer);
+
+
+        Ok(())
+    }
+
 
     /// Destroy a `DeviceBuffer`, returning an error.
     ///
@@ -264,8 +317,10 @@ impl<T> Drop for DeviceBuffer<T> {
 
 #[cfg(test)]
 mod test_device_buffer {
+    use ark_std::{end_timer, start_timer};
     use super::*;
     use crate::memory::device::DeviceBox;
+    use crate::memory::{LockedBuffer, UnifiedBuffer};
     use crate::stream::{Stream, StreamFlags};
 
     #[derive(Clone, Debug)]
@@ -288,6 +343,119 @@ mod test_device_buffer {
         buf.copy_to(&mut end).unwrap();
         assert_eq!(start, end);
     }
+
+    #[test]
+    fn test_async_copy_to_from_device_test_locked() {
+        let _context = crate::quick_init().unwrap();
+        let stream = Stream::new(StreamFlags::NON_BLOCKING, None).unwrap();
+        let timer =start_timer!(||"apply memory");
+        // let val = vec![1u64;90000000];
+        // let mut buffer = LockedBuffer::from_slice(&val).unwrap();
+
+        let mut buffer = LockedBuffer::new(&0u64, 33554432).unwrap();
+        end_timer!(timer);
+        buffer[2] = 1;
+        let start = buffer.as_slice();
+        unsafe {
+            let buf = DeviceBuffer::from_slice_async(&start, &stream).unwrap();
+        }
+        // stream.synchronize().unwrap();
+
+    }
+
+
+    #[test]
+    fn test_async_copy_to_from_device_test_unified() {
+        let _context = crate::quick_init().unwrap();
+        let stream = Stream::new(StreamFlags::NON_BLOCKING, None).unwrap();
+        let timer =start_timer!(||"from_slice");
+        // let val = vec![1u64;90000000];
+        // let mut buffer = LockedBuffer::from_slice(&val).unwrap();
+
+        let mut buffer = UnifiedBuffer::new(&0u64, 90000000).unwrap();
+        end_timer!(timer);
+        buffer[2] = 1;
+        let start = buffer.as_slice();
+        unsafe {
+            let buf = DeviceBuffer::from_slice_async(&start, &stream).unwrap();
+        }
+        // stream.synchronize().unwrap();
+
+    }
+
+    #[test]
+    fn test_async_copy_to_from_device_test_register_split_copy() {
+        let _context = crate::quick_init().unwrap();
+        let stream = Stream::new(StreamFlags::NON_BLOCKING, None).unwrap();
+        let stream2 = Stream::new(StreamFlags::NON_BLOCKING, None).unwrap();
+        let timer =start_timer!(||"apply memory");
+        let start = vec![0u64;33554432];
+        let start1 = &start[..start.len() / 2];
+        let start2 = &start[start.len() / 2..];
+        // let start2 = vec![0u64;33554432];
+        // let start = vec![0u64;8388608];
+        end_timer!(timer);
+        unsafe {
+            // DeviceBuffer::register_slice_chunk(&start).unwrap();
+
+            DeviceBuffer::register_slice(&start).unwrap();
+
+
+            let timer = start_timer!(||"thread register");
+            let timer1 = start_timer!(||"start1");
+            let _ = DeviceBuffer::from_slice_async(&start1, &stream).unwrap();
+            // end_timer!(timer1);
+            // let timers =start_timer!(||"synchronize");
+            // stream.synchronize().unwrap();
+            end_timer!(timer1);
+            let timer1 = start_timer!(||"start2");
+            let _ = DeviceBuffer::from_slice_async(&start2, &stream2).unwrap();
+            end_timer!(timer1);
+            let timers =start_timer!(||"synchronize");
+            stream.synchronize().unwrap();
+            stream2.synchronize().unwrap();
+            end_timer!(timer);
+            end_timer!(timer);
+
+
+            DeviceBuffer::unregister_slice(&start).unwrap();
+        }
+
+    }
+
+    #[test]
+    fn test_async_copy_to_from_device_test_register_cross_thread() {
+        let _context = crate::quick_init().unwrap();
+        let stream = Stream::new(StreamFlags::NON_BLOCKING, None).unwrap();
+        let timer =start_timer!(||"apply memory");
+        let start = vec![0u64;33554432];
+        let start2 = vec![0u64;33554432];
+        // let start = vec![0u64;8388608];
+        end_timer!(timer);
+        unsafe {
+            // DeviceBuffer::register_slice_chunk(&start).unwrap();
+            let timer = start_timer!(||"thread register");
+
+            let h = std::thread::spawn(move||{
+                let timer = start_timer!(||"thread quik init");
+                let _context = crate::quick_init().unwrap();
+
+                DeviceBuffer::register_slice(&start2).unwrap();
+                DeviceBuffer::unregister_slice(&start2).unwrap();
+                end_timer!(timer);
+            });
+            // DeviceBuffer::register_slice(&start).unwrap();
+            let timer_join = start_timer!(||"thread join");
+            h.join();
+            end_timer!(timer_join);
+            end_timer!(timer);
+            let buf = DeviceBuffer::from_slice_async(&start, &stream).unwrap();
+            DeviceBuffer::unregister_slice(&start).unwrap();
+        }
+
+    }
+
+
 
     #[test]
     fn test_async_copy_to_from_device() {
